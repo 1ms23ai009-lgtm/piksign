@@ -83,16 +83,20 @@ USE_AMP = torch.cuda.is_available()
 
 # Attack defaults (match the notebook / ensemble_3models.yaml).
 DEFAULTS = {
-    "alpha": 0.005,
-    "epsilon": 16,
-    "steps": 300,
+    "alpha": float(os.environ.get("ALPHA", "0.005")),
+    "epsilon": int(os.environ.get("EPSILON", "8")),     # lower = less visible noise
+    "steps": int(os.environ.get("STEPS", "150")),        # fewer = faster
     "optimizer": "adam",
     "momentum": 0.9,
     "momentum_decay": 0.9,
     "beta": 0.3,
-    "multi_pass_num": 10,
+    "multi_pass_num": int(os.environ.get("MULTI_PASS", "6")),  # fewer = faster
     "attack": "pgd_multi_pass",
 }
+print(
+    f"[config] epsilon={DEFAULTS['epsilon']} steps={DEFAULTS['steps']} "
+    f"multi_pass={DEFAULTS['multi_pass_num']}"
+)
 app = FastAPI(title="Image Shield")
 
 # --- Async job system -------------------------------------------------------
