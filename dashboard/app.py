@@ -67,7 +67,7 @@ INPUT_RES = 224
 #   - Output keeps the ORIGINAL dimensions (long edge capped to MAX_SIDE).
 #   - Smooth (bicubic) upscaling of the perturbation looks cleaner than the old
 #     blocky 224 output.
-WORK_RES = int(os.environ.get("WORK_RES", "336"))  # finer grid => less banding
+WORK_RES = int(os.environ.get("WORK_RES", "224"))  # proven working grid (coarser = survives downsample)
 MAX_SIDE = int(os.environ.get("MAX_SIDE", "4096"))
 # How the perturbation reaches full size (env-tunable, no rebuild needed):
 #   "delta" : scale only the perturbation onto the pristine full-size original
