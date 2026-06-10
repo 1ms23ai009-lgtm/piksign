@@ -79,7 +79,12 @@ UPSCALE_MODE = os.environ.get("UPSCALE_MODE", "delta").lower()
 # only JND_FLOOR x the perturbation; in TEXTURED regions keep full strength.
 #   JND_FLOOR = 1.0  -> no masking == exact current working behaviour (fallback)
 #   JND_FLOOR < 1.0  -> flat areas get cleaner (lower = cleaner but riskier)
-JND_FLOOR = float(os.environ.get("JND_FLOOR", "0.6"))
+JND_FLOOR = float(os.environ.get("JND_FLOOR", "1.0"))  # 1.0 = off (isolating consistency)
+# EOT over downsampling: during the attack, randomly downsample then restore so
+# the perturbation must survive resizing (what ChatGPT/Gemini do to uploads).
+# This is what makes the effect CONSISTENT across images, not just easy ones.
+#   1.0 = off (exact current behaviour) ; 0.5 = train against up-to-2x downsample
+EOT_MIN_SCALE = float(os.environ.get("EOT_MIN_SCALE", "0.5"))
 TARGET_PATH = os.environ.get(
     "TARGET_PATH", os.path.join(os.path.dirname(__file__), "assets", "target.png")
 )
@@ -100,7 +105,8 @@ DEFAULTS = {
 }
 print(
     f"[config] epsilon={DEFAULTS['epsilon']} steps={DEFAULTS['steps']} "
-    f"multi_pass={DEFAULTS['multi_pass_num']} work_res={WORK_RES} jnd_floor={JND_FLOOR}"
+    f"multi_pass={DEFAULTS['multi_pass_num']} work_res={WORK_RES} "
+    f"jnd_floor={JND_FLOOR} eot_min_scale={EOT_MIN_SCALE}"
 )
 app = FastAPI(title="Image Shield")
 
@@ -169,6 +175,30 @@ def _jnd_mask(img: torch.Tensor) -> torch.Tensor:
     return JND_FLOOR + (1.0 - JND_FLOOR) * activity
 
 
+class _RandomDownsampleEOT:
+    """EOT over resolution: randomly downsample the crop then restore it, so the
+    perturbation is forced to survive resizing (like the black-box's resize of an
+    upload). Identity when min_scale >= 1.0 (i.e. EOT off)."""
+
+    def __init__(self, res: int, min_scale: float, max_scale: float = 1.0):
+        self.res = res
+        self.min_scale = min_scale
+        self.max_scale = max_scale
+
+    def __call__(self, x: torch.Tensor) -> torch.Tensor:
+        if self.min_scale >= 0.999:
+            return x
+        f = float(torch.empty(1).uniform_(self.min_scale, self.max_scale).item())
+        low = max(16, int(round(self.res * f)))
+        x = torch.nn.functional.interpolate(
+            x, size=(low, low), mode="bilinear", align_corners=False, antialias=True
+        )
+        x = torch.nn.functional.interpolate(
+            x, size=(self.res, self.res), mode="bilinear", align_corners=False
+        )
+        return x
+
+
 def _build_cfg(epsilon: int, steps: int, multi_pass_num: int) -> OmegaConf:
     """Construct the minimal config the attack code reads from."""
     return OmegaConf.create(
@@ -212,10 +242,12 @@ def _load_everything() -> None:
     _target_tensor = _preprocess(tgt).unsqueeze(0).to(DEVICE)
     print(f"[startup] preloaded fixed target from {TARGET_PATH}")
 
+    _eot = _RandomDownsampleEOT(INPUT_RES, EOT_MIN_SCALE)
     _source_crop = [
-        transforms.RandomResizedCrop(INPUT_RES, scale=(0.5, 1.0)),
-        transforms.RandomResizedCrop(INPUT_RES, scale=(0.5, 1.0)),
-        transforms.RandomResizedCrop(INPUT_RES, scale=(0.5, 1.0)),
+        transforms.Compose(
+            [transforms.RandomResizedCrop(INPUT_RES, scale=(0.5, 1.0)), _eot]
+        )
+        for _ in range(3)
     ]
     _target_crop = transforms.Compose(
         [
