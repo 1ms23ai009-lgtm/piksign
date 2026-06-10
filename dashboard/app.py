@@ -84,13 +84,13 @@ USE_AMP = torch.cuda.is_available()
 # Attack defaults (match the notebook / ensemble_3models.yaml).
 DEFAULTS = {
     "alpha": float(os.environ.get("ALPHA", "0.005")),
-    "epsilon": int(os.environ.get("EPSILON", "8")),     # lower = less visible noise
+    "epsilon": int(os.environ.get("EPSILON", "12")),    # lower = less visible noise
     "steps": int(os.environ.get("STEPS", "150")),        # fewer = faster
     "optimizer": "adam",
     "momentum": 0.9,
     "momentum_decay": 0.9,
     "beta": 0.3,
-    "multi_pass_num": int(os.environ.get("MULTI_PASS", "6")),  # fewer = faster
+    "multi_pass_num": int(os.environ.get("MULTI_PASS", "10")),  # higher = stronger transfer
     "attack": "pgd_multi_pass",
 }
 print(
