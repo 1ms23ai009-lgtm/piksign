@@ -85,7 +85,7 @@ USE_AMP = torch.cuda.is_available()
 DEFAULTS = {
     "alpha": float(os.environ.get("ALPHA", "0.005")),
     "epsilon": int(os.environ.get("EPSILON", "12")),    # lower = less visible noise
-    "steps": int(os.environ.get("STEPS", "150")),        # fewer = faster
+    "steps": int(os.environ.get("STEPS", "300")),        # restored: effect needs enough iterations
     "optimizer": "adam",
     "momentum": 0.9,
     "momentum_decay": 0.9,
