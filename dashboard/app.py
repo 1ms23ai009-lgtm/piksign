@@ -67,7 +67,7 @@ INPUT_RES = 224
 #   - Output keeps the ORIGINAL dimensions (long edge capped to MAX_SIDE).
 #   - Smooth (bicubic) upscaling of the perturbation looks cleaner than the old
 #     blocky 224 output.
-WORK_RES = int(os.environ.get("WORK_RES", "224"))
+WORK_RES = int(os.environ.get("WORK_RES", "336"))  # finer grid => less banding
 MAX_SIDE = int(os.environ.get("MAX_SIDE", "4096"))
 # How the perturbation reaches full size (env-tunable, no rebuild needed):
 #   "delta" : scale only the perturbation onto the pristine full-size original
@@ -84,7 +84,7 @@ USE_AMP = torch.cuda.is_available()
 # Attack defaults (match the notebook / ensemble_3models.yaml).
 DEFAULTS = {
     "alpha": float(os.environ.get("ALPHA", "0.005")),
-    "epsilon": int(os.environ.get("EPSILON", "12")),    # lower = less visible noise
+    "epsilon": int(os.environ.get("EPSILON", "16")),    # required for the effect to transfer
     "steps": int(os.environ.get("STEPS", "300")),        # restored: effect needs enough iterations
     "optimizer": "adam",
     "momentum": 0.9,
