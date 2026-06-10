@@ -1,0 +1,18 @@
+# Dashboard server (in addition to the repo's ML deps below)
+fastapi>=0.111
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+anyio>=4.0
+
+# Core ML deps used by the attack (already needed by M-Attack-V2)
+torch>=2.1
+torchvision>=0.16
+transformers>=4.26
+open_clip_torch
+kornia
+hydra-core
+omegaconf
+einops
+wandb
+pytorch-lightning
+pillow
