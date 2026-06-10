@@ -75,6 +75,11 @@ MAX_SIDE = int(os.environ.get("MAX_SIDE", "4096"))
 #   "image" : upscale the whole WORK_RES adversarial image (softer image, but
 #             closest to the proven-working input -> safest for the effect).
 UPSCALE_MODE = os.environ.get("UPSCALE_MODE", "delta").lower()
+# JND / contrast masking: in FLAT regions (where the eye sees noise most), keep
+# only JND_FLOOR x the perturbation; in TEXTURED regions keep full strength.
+#   JND_FLOOR = 1.0  -> no masking == exact current working behaviour (fallback)
+#   JND_FLOOR < 1.0  -> flat areas get cleaner (lower = cleaner but riskier)
+JND_FLOOR = float(os.environ.get("JND_FLOOR", "0.6"))
 TARGET_PATH = os.environ.get(
     "TARGET_PATH", os.path.join(os.path.dirname(__file__), "assets", "target.png")
 )
@@ -95,7 +100,7 @@ DEFAULTS = {
 }
 print(
     f"[config] epsilon={DEFAULTS['epsilon']} steps={DEFAULTS['steps']} "
-    f"multi_pass={DEFAULTS['multi_pass_num']}"
+    f"multi_pass={DEFAULTS['multi_pass_num']} work_res={WORK_RES} jnd_floor={JND_FLOOR}"
 )
 app = FastAPI(title="Image Shield")
 
@@ -143,6 +148,25 @@ def _load_source_native(img: Image.Image) -> torch.Tensor:
             (max(1, round(w * scale)), max(1, round(h * scale))), Image.BICUBIC
         )
     return _to_tensor(img)
+
+
+def _jnd_mask(img: torch.Tensor) -> torch.Tensor:
+    """Per-pixel perceptual mask in [JND_FLOOR, 1].
+
+    ~1 in textured regions (noise is hidden there), -> JND_FLOOR in flat regions
+    (sky, walls, skin — where the eye notices noise most). Uses local luminance
+    standard deviation as a contrast-masking proxy. Shape [1,1,H,W], broadcasts
+    over the 3 colour channels of the perturbation.
+    """
+    r, g, b = img[:, 0:1], img[:, 1:2], img[:, 2:3]
+    lum = 0.299 * r + 0.587 * g + 0.114 * b
+    k, pad = 7, 3
+    mean = torch.nn.functional.avg_pool2d(lum, k, stride=1, padding=pad)
+    mean_sq = torch.nn.functional.avg_pool2d(lum * lum, k, stride=1, padding=pad)
+    std = (mean_sq - mean * mean).clamp(min=0.0).sqrt()
+    scale = std.mean() * 2.0 + 1e-6
+    activity = (std / scale).clamp(0.0, 1.0)
+    return JND_FLOOR + (1.0 - JND_FLOOR) * activity
 
 
 def _build_cfg(epsilon: int, steps: int, multi_pass_num: int) -> OmegaConf:
@@ -258,6 +282,8 @@ def _job_worker(job_id: str, raw: bytes) -> None:
             delta_native = torch.nn.functional.interpolate(
                 adv_work - src_work, size=(h, w), mode="bicubic", align_corners=False
             )
+            if JND_FLOOR < 1.0:  # hide noise in flat regions (keep it in texture)
+                delta_native = delta_native * _jnd_mask(src_native)
             adv_native = (src_native + delta_native).clamp(0.0, 1.0)
 
         buf = io.BytesIO()
