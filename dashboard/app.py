@@ -57,7 +57,8 @@ BACKBONES = [
     "clip_b16",
     "clip_b32",
     "clip_laion_b32",
-]  # 3-model ensemble (no g14) — ~2-3x faster per image
+    "clip_laion_g14",  # big ViT-G/14 — strongest transfer (paper's full ensemble)
+]
 INPUT_RES = 224
 # Strategy: run the attack at the PROVEN working resolution (WORK_RES), then
 # smoothly upscale the resulting perturbation onto the full-size original.
@@ -84,7 +85,7 @@ JND_FLOOR = float(os.environ.get("JND_FLOOR", "1.0"))  # 1.0 = off (isolating co
 # the perturbation must survive resizing (what ChatGPT/Gemini do to uploads).
 # This is what makes the effect CONSISTENT across images, not just easy ones.
 #   1.0 = off (exact current behaviour) ; 0.5 = train against up-to-2x downsample
-EOT_MIN_SCALE = float(os.environ.get("EOT_MIN_SCALE", "0.5"))
+EOT_MIN_SCALE = float(os.environ.get("EOT_MIN_SCALE", "1.0"))  # off: it weakened the signal
 TARGET_PATH = os.environ.get(
     "TARGET_PATH", os.path.join(os.path.dirname(__file__), "assets", "target.png")
 )
