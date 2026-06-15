@@ -48,7 +48,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 
 from attack import AttackFramework
 from surrogates.FeatureExtractors import ClipFeatureExtractor
-from surrogates.loss import EnsWeightedMultiAlignmentLoss, cosine_similarity
+from surrogates.loss import EnsWeightedMultiAlignmentLoss
 
 # --------------------------------------------------------------------------- #
 # Configuration (fixed-target, proven 224px settings)
@@ -57,8 +57,7 @@ BACKBONES = [
     "clip_b16",
     "clip_b32",
     "clip_laion_b32",
-    "clip_laion_g14",  # big ViT-G/14 — strongest transfer (paper's full ensemble)
-]
+]  # 3-model ensemble (no g14) — ~2-3x faster per image
 INPUT_RES = 224
 # Strategy: run the attack at the PROVEN working resolution (WORK_RES), then
 # smoothly upscale the resulting perturbation onto the full-size original.
@@ -75,7 +74,7 @@ MAX_SIDE = int(os.environ.get("MAX_SIDE", "4096"))
 #             (sharper image; perturbation stays low-frequency).
 #   "image" : upscale the whole WORK_RES adversarial image (softer image, but
 #             closest to the proven-working input -> safest for the effect).
-UPSCALE_MODE = os.environ.get("UPSCALE_MODE", "delta").lower()
+UPSCALE_MODE = os.environ.get("UPSCALE_MODE", "image").lower()
 # JND / contrast masking: in FLAT regions (where the eye sees noise most), keep
 # only JND_FLOOR x the perturbation; in TEXTURED regions keep full strength.
 #   JND_FLOOR = 1.0  -> no masking == exact current working behaviour (fallback)
@@ -85,7 +84,7 @@ JND_FLOOR = float(os.environ.get("JND_FLOOR", "1.0"))  # 1.0 = off (isolating co
 # the perturbation must survive resizing (what ChatGPT/Gemini do to uploads).
 # This is what makes the effect CONSISTENT across images, not just easy ones.
 #   1.0 = off (exact current behaviour) ; 0.5 = train against up-to-2x downsample
-EOT_MIN_SCALE = float(os.environ.get("EOT_MIN_SCALE", "1.0"))  # off: it weakened the signal
+EOT_MIN_SCALE = float(os.environ.get("EOT_MIN_SCALE", "1.0"))  # off (it over-weakened the effect)
 TARGET_PATH = os.environ.get(
     "TARGET_PATH", os.path.join(os.path.dirname(__file__), "assets", "target.png")
 )
@@ -123,11 +122,10 @@ _jobs_lock = threading.Lock()
 # Warm globals, populated at startup.
 _models = None
 _ensemble_loss = None
-_target_tensor = None  # [N, 3, 224, 224] on DEVICE (N target views)
+_target_tensor = None  # [1, 3, 224, 224] on DEVICE
 _source_crop = None
 _target_crop = None
 _change_iters = [150, 275]  # proven single-GPU schedule
-TARGET_NUM = 1  # number of target images (>1 => multi-target "character" mode)
 
 _preprocess = transforms.Compose(
     [
@@ -201,35 +199,6 @@ class _RandomDownsampleEOT:
         return x
 
 
-class _MultiTargetLoss(torch.nn.Module):
-    """Align the source equally to MULTIPLE target images (the *character*, not
-    one picture). For each surrogate, take the mean cosine similarity between the
-    source and every target, then average across models. Handles batch=1 cleanly.
-    Maximising this pushes the image toward 'Mickey-ness' across all views, which
-    is what trips a copyright filter — at the SAME perturbation budget (no extra
-    noise).
-    """
-
-    def __init__(self, extractors):
-        super().__init__()
-        self.extractors = torch.nn.ModuleList(extractors)
-
-    def forward(self, source_img, target_img, target_num: int = 1):
-        # source_img [1,C,H,W] ; target_img [N,C,H,W]
-        with torch.no_grad():
-            tgt_feats = [
-                m(target_img, return_dict=False) for m in self.extractors
-            ]
-        loss = 0.0
-        for i, m in enumerate(self.extractors):
-            s = m(source_img, return_dict=False)
-            if s.dim() == 1:
-                s = s.unsqueeze(0)
-            sim = cosine_similarity(s, tgt_feats[i])  # [N] (broadcast over targets)
-            loss = loss + sim.mean()
-        return loss / len(self.extractors)
-
-
 def _build_cfg(epsilon: int, steps: int, multi_pass_num: int) -> OmegaConf:
     """Construct the minimal config the attack code reads from."""
     return OmegaConf.create(
@@ -253,7 +222,6 @@ def _build_cfg(epsilon: int, steps: int, multi_pass_num: int) -> OmegaConf:
 @app.on_event("startup")
 def _load_everything() -> None:
     global _models, _ensemble_loss, _target_tensor, _source_crop, _target_crop
-    global TARGET_NUM
 
     print(f"[startup] device={DEVICE}  amp={USE_AMP}")
     print(f"[startup] loading backbones {BACKBONES} (one-time)...")
@@ -262,35 +230,17 @@ def _load_everything() -> None:
         ClipFeatureExtractor(name).eval().to(DEVICE).requires_grad_(False)
         for name in BACKBONES
     ]
+    _ensemble_loss = EnsWeightedMultiAlignmentLoss(_models, beta=DEFAULTS["beta"])
     print(f"[startup] models ready in {time.time() - t0:.1f}s")
 
-    # Targets: every image in assets/targets/ (multi-target "character" mode);
-    # otherwise fall back to the single target image (exact previous behaviour).
-    targets_dir = os.path.join(os.path.dirname(__file__), "assets", "targets")
-    target_paths = []
-    if os.path.isdir(targets_dir):
-        for fn in sorted(os.listdir(targets_dir)):
-            if fn.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
-                target_paths.append(os.path.join(targets_dir, fn))
-    if not target_paths and os.path.exists(TARGET_PATH):
-        target_paths = [TARGET_PATH]
-    if not target_paths:
+    if not os.path.exists(TARGET_PATH):
         raise RuntimeError(
-            "No target image(s) found (assets/targets/* or TARGET_PATH)."
+            f"Fixed target image not found at '{TARGET_PATH}'. "
+            "Place your target there or set the TARGET_PATH env var."
         )
-    tgts = [_preprocess(Image.open(p).convert("RGB")) for p in target_paths]
-    _target_tensor = torch.stack(tgts).to(DEVICE)  # [N, 3, 224, 224]
-    TARGET_NUM = len(target_paths)
-    print(
-        f"[startup] preloaded {TARGET_NUM} target(s): "
-        f"{[os.path.basename(p) for p in target_paths]}"
-    )
-
-    if TARGET_NUM > 1:
-        _ensemble_loss = _MultiTargetLoss(_models)
-        print(f"[startup] using MULTI-target loss over {TARGET_NUM} views")
-    else:
-        _ensemble_loss = EnsWeightedMultiAlignmentLoss(_models, beta=DEFAULTS["beta"])
+    tgt = Image.open(TARGET_PATH).convert("RGB")
+    _target_tensor = _preprocess(tgt).unsqueeze(0).to(DEVICE)
+    print(f"[startup] preloaded fixed target from {TARGET_PATH}")
 
     _eot = _RandomDownsampleEOT(INPUT_RES, EOT_MIN_SCALE)
     _source_crop = [
@@ -324,7 +274,7 @@ def _run_attack(image_org, epsilon, steps, multi_pass_num):
         img_index=0,
         image_org=image_org,
         image_tgt=_target_tensor,
-        target_num=TARGET_NUM,
+        target_num=1,
         amp=USE_AMP,
         log_wandb=False,
         log_interval=10 ** 9,  # effectively never log to a pbar/wandb
