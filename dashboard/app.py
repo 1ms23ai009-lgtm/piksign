@@ -74,12 +74,12 @@ MAX_SIDE = int(os.environ.get("MAX_SIDE", "4096"))
 #             (sharper image; perturbation stays low-frequency).
 #   "image" : upscale the whole WORK_RES adversarial image (softer image, but
 #             closest to the proven-working input -> safest for the effect).
-UPSCALE_MODE = os.environ.get("UPSCALE_MODE", "image").lower()
+UPSCALE_MODE = os.environ.get("UPSCALE_MODE", "delta").lower()  # delta = keep sharp original (stealth)
 # JND / contrast masking: in FLAT regions (where the eye sees noise most), keep
 # only JND_FLOOR x the perturbation; in TEXTURED regions keep full strength.
 #   JND_FLOOR = 1.0  -> no masking == exact current working behaviour (fallback)
 #   JND_FLOOR < 1.0  -> flat areas get cleaner (lower = cleaner but riskier)
-JND_FLOOR = float(os.environ.get("JND_FLOOR", "0.75"))  # flat areas keep 75% (gentle); 1.0 = off
+JND_FLOOR = float(os.environ.get("JND_FLOOR", "0.6"))  # flat areas keep 60% (stealth); 1.0 = off
 # EOT over downsampling: during the attack, randomly downsample then restore so
 # the perturbation must survive resizing (what ChatGPT/Gemini do to uploads).
 # This is what makes the effect CONSISTENT across images, not just easy ones.
@@ -94,7 +94,7 @@ USE_AMP = torch.cuda.is_available()
 # Attack defaults (match the notebook / ensemble_3models.yaml).
 DEFAULTS = {
     "alpha": float(os.environ.get("ALPHA", "0.005")),
-    "epsilon": int(os.environ.get("EPSILON", "16")),    # required for the effect to transfer
+    "epsilon": int(os.environ.get("EPSILON", "14")),    # lowered for stealth (fainter Mickey)
     "steps": int(os.environ.get("STEPS", "300")),        # restored: effect needs enough iterations
     "optimizer": "adam",
     "momentum": 0.9,
