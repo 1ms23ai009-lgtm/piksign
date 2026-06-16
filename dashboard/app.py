@@ -85,6 +85,16 @@ JND_FLOOR = float(os.environ.get("JND_FLOOR", "1.0"))  # 1.0 = off (isolating co
 # This is what makes the effect CONSISTENT across images, not just easy ones.
 #   1.0 = off (exact current behaviour) ; 0.5 = train against up-to-2x downsample
 EOT_MIN_SCALE = float(os.environ.get("EOT_MIN_SCALE", "1.0"))  # off (it over-weakened the effect)
+# Phase 2 — detail re-injection (image-mode only): restore the ORIGINAL photo's
+# fine detail ABOVE GPT's resolution (~768px). GPT discards that band, so the
+# effect is untouched, but humans see sharpness -> much cleaner than a plain
+# upscale.
+#   DETAIL_STRENGTH = 0.0 -> off (exact current working image-mode, the fallback)
+#   DETAIL_STRENGTH = 1.0 -> fully restore the discarded high-frequency detail
+#   DETAIL_CUTOFF   = shortest-side px above which detail is restored. >= 768 is
+#                     safe for both of GPT's detail modes; lower = sharper, riskier
+DETAIL_STRENGTH = float(os.environ.get("DETAIL_STRENGTH", "1.0"))
+DETAIL_CUTOFF = int(os.environ.get("DETAIL_CUTOFF", "768"))
 TARGET_PATH = os.environ.get(
     "TARGET_PATH", os.path.join(os.path.dirname(__file__), "assets", "target.png")
 )
@@ -106,7 +116,8 @@ DEFAULTS = {
 print(
     f"[config] epsilon={DEFAULTS['epsilon']} steps={DEFAULTS['steps']} "
     f"multi_pass={DEFAULTS['multi_pass_num']} work_res={WORK_RES} "
-    f"jnd_floor={JND_FLOOR} eot_min_scale={EOT_MIN_SCALE}"
+    f"jnd_floor={JND_FLOOR} eot_min_scale={EOT_MIN_SCALE} "
+    f"upscale={UPSCALE_MODE} detail_strength={DETAIL_STRENGTH} detail_cutoff={DETAIL_CUTOFF}"
 )
 app = FastAPI(title="Image Shield")
 
@@ -310,6 +321,21 @@ def _job_worker(job_id: str, raw: bytes) -> None:
             adv_native = torch.nn.functional.interpolate(
                 adv_work, size=(h, w), mode="bicubic", align_corners=False
             ).clamp(0.0, 1.0)
+            if DETAIL_STRENGTH > 0.0 and min(h, w) > DETAIL_CUTOFF:
+                # Add back the ORIGINAL's detail finer than ~DETAIL_CUTOFF (the
+                # band GPT discards) -> human-visible sharpness, no effect cost.
+                f = DETAIL_CUTOFF / min(h, w)
+                lh, lw = max(1, round(h * f)), max(1, round(w * f))
+                blur = torch.nn.functional.interpolate(
+                    src_native, size=(lh, lw), mode="bilinear",
+                    align_corners=False, antialias=True,
+                )
+                blur = torch.nn.functional.interpolate(
+                    blur, size=(h, w), mode="bilinear", align_corners=False
+                )
+                adv_native = (
+                    adv_native + DETAIL_STRENGTH * (src_native - blur)
+                ).clamp(0.0, 1.0)
         else:  # "delta" (default): scale only the (low-freq) perturbation up
             delta_native = torch.nn.functional.interpolate(
                 adv_work - src_work, size=(h, w), mode="bicubic", align_corners=False
