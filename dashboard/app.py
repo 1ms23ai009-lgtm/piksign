@@ -79,7 +79,7 @@ UPSCALE_MODE = os.environ.get("UPSCALE_MODE", "image").lower()
 # only JND_FLOOR x the perturbation; in TEXTURED regions keep full strength.
 #   JND_FLOOR = 1.0  -> no masking == exact current working behaviour (fallback)
 #   JND_FLOOR < 1.0  -> flat areas get cleaner (lower = cleaner but riskier)
-JND_FLOOR = float(os.environ.get("JND_FLOOR", "1.0"))  # 1.0 = off (isolating consistency)
+JND_FLOOR = float(os.environ.get("JND_FLOOR", "0.75"))  # flat areas keep 75% (gentle); 1.0 = off
 # EOT over downsampling: during the attack, randomly downsample then restore so
 # the perturbation must survive resizing (what ChatGPT/Gemini do to uploads).
 # This is what makes the effect CONSISTENT across images, not just easy ones.
@@ -310,6 +310,15 @@ def _job_worker(job_id: str, raw: bytes) -> None:
             adv_native = torch.nn.functional.interpolate(
                 adv_work, size=(h, w), mode="bicubic", align_corners=False
             ).clamp(0.0, 1.0)
+            if JND_FLOOR < 1.0:
+                # Reduce the perturbation in FLAT regions of the real image (where
+                # the eye notices it most), keep it in textured regions. Uses the
+                # real original's texture for the mask. Does NOT add sharpness.
+                src_up = torch.nn.functional.interpolate(
+                    src_work, size=(h, w), mode="bicubic", align_corners=False
+                ).clamp(0.0, 1.0)
+                mask = _jnd_mask(src_native)
+                adv_native = (src_up + mask * (adv_native - src_up)).clamp(0.0, 1.0)
         else:  # "delta" (default): scale only the (low-freq) perturbation up
             delta_native = torch.nn.functional.interpolate(
                 adv_work - src_work, size=(h, w), mode="bicubic", align_corners=False
